@@ -1,22 +1,43 @@
-﻿using System;
+﻿#if UNITY_EDITOR
+using System;
 using UnityEditor;
-using UnityEditor.Experimental.AssetImporters;
 using UnityEngine;
 
+
 [CustomEditor(typeof(SmartTextureImporter), true)]
-public class SmartTextureImporterEditor : ScriptedImporterEditor
+class SmartTextureImporterEditor : UnityEditor.AssetImporters.ScriptedImporterEditor
 {
+    [CustomPropertyDrawer(typeof(SmartTextureImporter.InputProperty), true)]
+    class InputPropertyDrawer : PropertyDrawer
+    {
+        GUIContent temp = new GUIContent();
+
+        public override void OnGUI(Rect rect, SerializedProperty property, GUIContent label)
+        {
+            var name = property.FindPropertyRelative("propertyName");
+            var value = property.FindPropertyRelative("value");
+
+            rect.width /= 2;
+            EditorGUI.PropertyField(rect, name, GUIContent.none);
+
+            EditorGUIUtility.labelWidth = 15;
+            rect.x += rect.width;
+            if (value.propertyType == SerializedPropertyType.Vector4){
+                rect.width /= 4;
+                temp.text = " x"; EditorGUI.PropertyField(rect, value.FindPropertyRelative("x"), temp); rect.x += rect.width;
+                temp.text = " y"; EditorGUI.PropertyField(rect, value.FindPropertyRelative("y"), temp); rect.x += rect.width;
+                temp.text = " z"; EditorGUI.PropertyField(rect, value.FindPropertyRelative("z"), temp); rect.x += rect.width;
+                temp.text = " w"; EditorGUI.PropertyField(rect, value.FindPropertyRelative("w"), temp); 
+            }
+            else{
+                temp.text = " ";
+                EditorGUI.PropertyField(rect, value, temp);
+            }
+        }
+    }
+
     internal static class Styles
     {
-        public static readonly GUIContent[] labelChannels =
-        {
-            EditorGUIUtility.TrTextContent("Red Channel", "This texture source channel will be packed into the Output texture red channel"),
-            EditorGUIUtility.TrTextContent("Green Channel", "This texture source channel will be packed into the Output texture green channel"),
-            EditorGUIUtility.TrTextContent("Blue Channel", "This texture source channel will be packed into the Output texture blue channel"),
-            EditorGUIUtility.TrTextContent("Alpha Channel", "This texture source channel will be packed into the Output texture alpha channel"),
-        };
-
-        public static readonly GUIContent invertColor = EditorGUIUtility.TrTextContent("Invert Color", "If enabled outputs the inverted color (1.0 - color)");
         public static readonly GUIContent readWrite = EditorGUIUtility.TrTextContent("Read/Write Enabled", "Enable to be able to access the raw pixel data from code.");
         public static readonly GUIContent generateMipMaps = EditorGUIUtility.TrTextContent("Generate Mip Maps");
         public static readonly GUIContent streamingMipMaps = EditorGUIUtility.TrTextContent("Streaming Mip Maps");
@@ -40,13 +61,16 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
         public static readonly string[] resizeAlgorithmOptions = Enum.GetNames(typeof(TextureResizeAlgorithm));
     }
 
-    SerializedProperty[] m_InputTextures = new SerializedProperty[4];
-    SerializedProperty[] m_InputTextureSettings = new SerializedProperty[4];
+    SerializedProperty m_Inputs;
+    SerializedProperty m_BlitMaterial;
+    SerializedProperty m_OutputSize;
+    SerializedProperty m_Preview;
     
     SerializedProperty m_IsReadableProperty;
     SerializedProperty m_sRGBTextureProperty;
+    SerializedProperty m_HasAlpha;
     
-    SerializedProperty m_EnableMipMapProperty;
+    SerializedProperty m_EnableMipMap;
     SerializedProperty m_StreamingMipMaps;
     SerializedProperty m_StreamingMipMapPriority;
 
@@ -54,7 +78,7 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
     SerializedProperty m_WrapModeProperty;
     SerializedProperty m_AnisotropiceLevelPropery;
 
-    SerializedProperty m_TexturePlatformSettingsProperty;
+    SerializedProperty m_TexturePlatformSettings;
 
     SerializedProperty m_TextureFormat;
     SerializedProperty m_UseExplicitTextureFormat;
@@ -75,22 +99,30 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
         
         m_ShowAdvanced = EditorPrefs.GetBool(k_AdvancedTextureSettingName, m_ShowAdvanced);
         
-        EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Input Textures", EditorStyles.boldLabel);
-        using (new EditorGUI.IndentLevelScope())
-        {
-            DrawInputTexture(0);
-            DrawInputTexture(1);
-            DrawInputTexture(2);
-            DrawInputTexture(3);
-        }
-        EditorGUILayout.Space();
-        EditorGUILayout.Space();
+        EditorGUI.BeginChangeCheck();
+      
+        EditorGUILayout.BeginHorizontal();
+        ApplyRevertGUI();
+        if (GUILayout.Button("Repack"))
+            ApplyAndImport();
+        GUILayout.FlexibleSpace();
+        EditorGUILayout.EndHorizontal();
+        GUILayout.Space(5);
+
+        EditorGUILayout.PropertyField(m_BlitMaterial);
+        EditorGUILayout.PropertyField(m_OutputSize);
+
+        EditorGUILayout.PropertyField(m_Inputs);
         
-        EditorGUILayout.LabelField("Output Texture", EditorStyles.boldLabel);
-        using (new EditorGUI.IndentLevelScope())
+        if (m_EnableMipMap.isExpanded = EditorGUILayout.BeginFoldoutHeaderGroup(m_EnableMipMap.isExpanded, "Output Texture"))
         {
-            EditorGUILayout.PropertyField(m_EnableMipMapProperty, Styles.generateMipMaps);
+            // TODO: Figure out how to apply TextureImporterSettings on ScriptedImporter
+            EditorGUILayout.PropertyField(m_HasAlpha);
+            EditorGUILayout.PropertyField(m_IsReadableProperty, Styles.readWrite);
+            EditorGUILayout.PropertyField(m_sRGBTextureProperty, Styles.sRGBTexture);
+            EditorGUILayout.Space();
+            
+            EditorGUILayout.PropertyField(m_EnableMipMap, Styles.generateMipMaps);
             EditorGUILayout.PropertyField(m_StreamingMipMaps, Styles.streamingMipMaps);
             EditorGUILayout.PropertyField(m_StreamingMipMapPriority, Styles.streamingMipMapsPrio);
             EditorGUILayout.Space();
@@ -100,46 +132,25 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
 
             EditorGUILayout.IntSlider(m_AnisotropiceLevelPropery, 0, 16, Styles.textureAnisotropicLevel);
             EditorGUILayout.Space();
-
-            // TODO: Figure out how to apply TextureImporterSettings on ScriptedImporter
-            EditorGUILayout.PropertyField(m_IsReadableProperty, Styles.readWrite);
-            EditorGUILayout.PropertyField(m_sRGBTextureProperty, Styles.sRGBTexture);
         }
-        EditorGUILayout.Space();
-        EditorGUILayout.Space();
+        EditorGUILayout.EndFoldoutHeaderGroup();
 
         // TODO: Figure out how to apply PlatformTextureImporterSettings on ScriptedImporter
         DrawTextureImporterSettings();
-        EditorGUILayout.Space();
-        EditorGUILayout.Space();
         serializedObject.ApplyModifiedProperties();
-        ApplyRevertGUI();
-    }
-
-    void DrawInputTexture(int index)
-    {
-        if (index < 0 || index >= 4)
-            return;
-
-        EditorGUILayout.PropertyField(m_InputTextures[index], Styles.labelChannels[index]);
-
-        SerializedProperty invertColor = m_InputTextureSettings[index].FindPropertyRelative("invertColor");
-        invertColor.boolValue = EditorGUILayout.Toggle(Styles.invertColor, invertColor.boolValue);
-        EditorGUILayout.Space();
     }
 
     void DrawTextureImporterSettings()
     {
-        SerializedProperty maxTextureSize = m_TexturePlatformSettingsProperty.FindPropertyRelative("m_MaxTextureSize");
+        SerializedProperty maxTextureSize = m_TexturePlatformSettings.FindPropertyRelative("m_MaxTextureSize");
         SerializedProperty resizeAlgorithm =
-            m_TexturePlatformSettingsProperty.FindPropertyRelative("m_ResizeAlgorithm");
+            m_TexturePlatformSettings.FindPropertyRelative("m_ResizeAlgorithm");
         SerializedProperty textureCompression =
-            m_TexturePlatformSettingsProperty.FindPropertyRelative("m_TextureCompression");
+            m_TexturePlatformSettings.FindPropertyRelative("m_TextureCompression");
         SerializedProperty textureCompressionCrunched =
-            m_TexturePlatformSettingsProperty.FindPropertyRelative("m_CrunchedCompression");
+            m_TexturePlatformSettings.FindPropertyRelative("m_CrunchedCompression");
 
-        EditorGUILayout.LabelField("Texture Platform Settings", EditorStyles.boldLabel);
-        using (new EditorGUI.IndentLevelScope())
+        if (m_TexturePlatformSettings.isExpanded = EditorGUILayout.BeginFoldoutHeaderGroup(m_TexturePlatformSettings.isExpanded, "Texture Platform Settings"))
         {
             EditorGUI.BeginChangeCheck();
             int sizeOption = EditorGUILayout.Popup("Texture Size", (int)Mathf.Log(maxTextureSize.intValue, 2) - 5, Styles.textureSizeOptions);
@@ -151,8 +162,8 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
             if (EditorGUI.EndChangeCheck())
                 resizeAlgorithm.intValue = resizeOption;
 
-            EditorGUILayout.LabelField("Compression", EditorStyles.boldLabel);
-            using (new EditorGUI.IndentLevelScope())
+            //EditorGUILayout.LabelField("Compression", EditorStyles.boldLabel);
+            //using (new EditorGUI.IndentLevelScope())
             {
                 EditorGUI.BeginChangeCheck();
                 bool explicitFormat = EditorGUILayout.Toggle(Styles.useExplicitTextureFormat, m_UseExplicitTextureFormat.boolValue);
@@ -186,22 +197,21 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
                 }
             }
         }
+        EditorGUILayout.EndFoldoutHeaderGroup();
     }
     
     void CacheSerializedProperties()
     {
-        SerializedProperty texturesProperty = serializedObject.FindProperty("m_InputTextures");
-        SerializedProperty settingsProperty = serializedObject.FindProperty("m_InputTextureSettings");
-        for (int i = 0; i < 4; ++i)
-        {
-            m_InputTextures[i] = texturesProperty.GetArrayElementAtIndex(i);
-            m_InputTextureSettings[i] = settingsProperty.GetArrayElementAtIndex(i);
-        }
+        m_BlitMaterial = serializedObject.FindProperty("m_BlitMaterial");
+        m_OutputSize = serializedObject.FindProperty("m_OutputSize");
+        m_Inputs = serializedObject.FindProperty("m_Inputs");
+        m_Preview = serializedObject.FindProperty("m_Preview");
         
         m_IsReadableProperty = serializedObject.FindProperty("m_IsReadable");
         m_sRGBTextureProperty = serializedObject.FindProperty("m_sRGBTexture");
+        m_HasAlpha = serializedObject.FindProperty("m_HasAlpha");
         
-        m_EnableMipMapProperty = serializedObject.FindProperty("m_EnableMipMap");
+        m_EnableMipMap = serializedObject.FindProperty("m_EnableMipMap");
         m_StreamingMipMaps = serializedObject.FindProperty("m_StreamingMipMaps");
         m_StreamingMipMapPriority = serializedObject.FindProperty("m_StreamingMipMapPriority");
 
@@ -209,8 +219,9 @@ public class SmartTextureImporterEditor : ScriptedImporterEditor
         m_WrapModeProperty = serializedObject.FindProperty("m_WrapMode");
         m_AnisotropiceLevelPropery = serializedObject.FindProperty("m_AnisotricLevel");
 
-        m_TexturePlatformSettingsProperty = serializedObject.FindProperty("m_TexturePlatformSettings");
+        m_TexturePlatformSettings = serializedObject.FindProperty("m_TexturePlatformSettings");
         m_TextureFormat = serializedObject.FindProperty("m_TextureFormat");
         m_UseExplicitTextureFormat = serializedObject.FindProperty("m_UseExplicitTextureFormat");
     }
 }
+#endif

@@ -1,4 +1,4 @@
-﻿Shader "Hidden/PackChannel"
+﻿Shader "Blit/PackChannel"
 {
     Properties
     {

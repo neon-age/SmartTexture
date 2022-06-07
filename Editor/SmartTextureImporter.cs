@@ -1,21 +1,40 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
+using System.Linq;
 using UnityEditor;
-using UnityEditor.Experimental.AssetImporters;
+
 using UnityEngine;
+using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
-[ScriptedImporter(k_SmartTextureVersion, k_SmartTextureExtesion)]
-public class SmartTextureImporter : ScriptedImporter
+[UnityEditor.AssetImporters.ScriptedImporter(k_SmartTextureVersion, k_SmartTextureExtesion)]
+public class SmartTextureImporter : UnityEditor.AssetImporters.ScriptedImporter
 {
     public const string k_SmartTextureExtesion = "smartex";
     public const int k_SmartTextureVersion = 1;
     public const int k_MenuPriority = 320;
 
+    [Serializable] internal class InputProperty { public string propertyName; }
+    [Serializable] class InputTexture : InputProperty { public Texture value; }
+    [Serializable] class InputFloat : InputProperty { public float value; }
+    [Serializable] class InputColor : InputProperty { [ColorUsage(true, true)] public Color value; }
+    [Serializable] class InputVector : InputProperty { public Vector4 value; }
+
+    [Serializable] class Inputs {
+        public InputTexture[] m_Textures;
+        public InputFloat[] m_Floats;
+        public InputColor[] m_Colors;
+        public InputVector[] m_Vectors;
+        
+    }
     // Input Texture Settings
-    [SerializeField] Texture2D[] m_InputTextures = new Texture2D[4];
-    [SerializeField] TexturePackingSettings[] m_InputTextureSettings = new TexturePackingSettings[4];
-    
+    [SerializeField] Material m_BlitMaterial;
+    [SerializeField] Vector2Int m_OutputSize;
+    [SerializeField] bool m_Preview;
+    [SerializeField] Inputs m_Inputs;
+
     // Output Texture Settings
+    [SerializeField] bool m_HasAlpha = false;
     [SerializeField] bool m_IsReadable = false;
     [SerializeField] bool m_sRGBTexture = false;
     
@@ -66,20 +85,27 @@ public class SmartTextureImporter : ScriptedImporter
             "Smart Texture Asset for Unity. Allows to channel pack textures by using a ScriptedImporter. Requires Smart Texture Package from https://github.com/phi-lira/SmartTexture. Developed by Felipe Lira.");
     }
     
-    public override void OnImportAsset(AssetImportContext ctx)
+    public override void OnImportAsset(UnityEditor.AssetImporters.AssetImportContext ctx)
     {
         int width = m_TexturePlatformSettings.maxTextureSize;
         int height = m_TexturePlatformSettings.maxTextureSize;
-        Texture2D[] textures = m_InputTextures;
-        TexturePackingSettings[] settings = m_InputTextureSettings;
-        
-        var canGenerateTexture = GetOuputTextureSize(textures, out var inputW, out var inputH);
-        //Mimic default importer. We use max size unless assets are smaller
-        width = width < inputW ? width : inputW;
-        height = height < inputH ? height : inputH;
+        var maxSize = m_OutputSize;
 
-        bool hasAlpha = textures[3] != null;
-        Texture2D texture = new Texture2D(width, height, hasAlpha ? TextureFormat.ARGB32 : TextureFormat.RGB24, m_EnableMipMap, m_sRGBTexture)
+        foreach (var t in m_Inputs.m_Textures)
+        {
+            if (t.value == null) continue;
+            if (m_OutputSize.x == 0 && t.value.width > maxSize.x) maxSize.x = t.value.width;
+            if (m_OutputSize.y == 0 && t.value.height > maxSize.y) maxSize.y = t.value.height;
+        }
+        var canGenerateTexture = maxSize != default;
+        maxSize.x = Mathf.Max(maxSize.x, 1);
+        maxSize.y = Mathf.Max(maxSize.y, 1);
+
+        //Mimic default importer. We use max size unless assets are smaller
+        width = width < maxSize.x ? width : maxSize.x;
+        height = height < maxSize.y ? height : maxSize.y;
+
+        Texture2D texture = new Texture2D(width, height, m_HasAlpha ? TextureFormat.ARGB32 : TextureFormat.RGB24, m_EnableMipMap, m_sRGBTexture)
         {
             filterMode = m_FilterMode,
             wrapMode = m_WrapMode,
@@ -90,15 +116,15 @@ public class SmartTextureImporter : ScriptedImporter
         {
             //Only attempt to apply any settings if the inputs exist
 
-            texture.PackChannels(textures, settings);
+            PackChannels(m_BlitMaterial, texture, m_Inputs);
 
             // Mark all input textures as dependency to the texture array.
             // This causes the texture array to get re-generated when any input texture changes or when the build target changed.
-            foreach (Texture2D t in textures)
+            foreach (var t in m_Inputs.m_Textures)
             {
-                if (t != null)
+                if (t.value != null)
                 {
-                    var path = AssetDatabase.GetAssetPath(t);
+                    var path = AssetDatabase.GetAssetPath(t.value);
                     ctx.DependsOnSourceAsset(path);
                 }
             }
@@ -117,8 +143,35 @@ public class SmartTextureImporter : ScriptedImporter
         
 		//If we pass the tex to the 3rd arg we can have it show in an Icon as normal, maybe configurable?
         //ctx.AddObjectToAsset("mask", texture, texture);
-		ctx.AddObjectToAsset("mask", texture);
+		ctx.AddObjectToAsset("mask", texture, texture);
         ctx.SetMainObject(texture);
+    }
+
+    static void PackChannels(Material mat, Texture2D mask, Inputs inputs)
+    {
+        int width = mask.width;
+        int height = mask.height;
+
+        mat = new Material(mat);
+
+        foreach (var i in inputs.m_Textures) mat.SetTexture(i.propertyName, i.value);
+        foreach (var i in inputs.m_Floats) mat.SetFloat(i.propertyName, i.value);
+        foreach (var i in inputs.m_Colors) mat.SetColor(i.propertyName, i.value);
+        foreach (var i in inputs.m_Vectors) mat.SetVector(i.propertyName, i.value);
+        
+        var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = rt;
+
+        CommandBuffer cmd = new CommandBuffer();
+        cmd.Blit(null, rt, mat);
+        cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+        Graphics.ExecuteCommandBuffer(cmd);
+        mask.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+        mask.Apply();
+
+        RenderTexture.active = previous;
+        RenderTexture.ReleaseTemporary(rt);
     }
 
     void ApplyPropertiesViaSerializedObj(Texture tex)
@@ -132,34 +185,5 @@ public class SmartTextureImporter : ScriptedImporter
         //so.FindProperty("m_ColorSpace").intValue = (int)(m_sRGBTexture ? ColorSpace.Gamma : ColorSpace.Linear);
 
         so.ApplyModifiedPropertiesWithoutUndo();
-    }
-
-    bool GetOuputTextureSize(Texture2D[] textures, out int width, out int height)
-    {
-        Texture2D masterTexture = null;
-        foreach (Texture2D t in textures)
-        {
-            if (t != null)
-            {
-                //Previously we only read the first readable asset
-                //but we can get the width&height of unreadable textures.
-                //May need more complex selection as now Red channel dictates minimum size
-                //Should we try and find the smallest?
-                masterTexture = t;
-                break;
-            }
-        }
-
-        if (masterTexture == null)
-        {
-            var defaultTexture = Texture2D.blackTexture;
-            width = defaultTexture.width;
-            height = defaultTexture.height;
-            return false;
-        }
-
-        width = masterTexture.width;
-        height = masterTexture.height;
-        return true;
     }
 }

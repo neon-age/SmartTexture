@@ -1,4 +1,13 @@
 # SmartTexture Asset for Unity
+
+## Modified by Neonage
+* Pack with any custom material/shader
+* Provide material properties per-texture
+
+https://user-images.githubusercontent.com/29812914/172454566-8936e34e-7108-48f5-ba88-94f84b247a3d.mp4
+
+
+
 SmartTexture is a custom asset for Unity that allows you a [channel packing](http://wiki.polycount.com/wiki/ChannelPacking) workflow in the editortextures and use them in the Unity editor for a streamlined workflow.
 SmartTextures work as a regular 2D texture asset and you can assign it to material inspectors.
 
